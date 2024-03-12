@@ -7,7 +7,7 @@
 
 import * as path from 'path';
 import { isEmpty, values, cloneDeep, find, indexOf, forEach } from 'lodash';
-import { FsUtility } from '@contentstack/cli-utilities';
+import { FsUtility } from "@contentstack/cli-utilities";
 import {
   fsUtil,
   log,

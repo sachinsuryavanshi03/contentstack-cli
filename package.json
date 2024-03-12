@@ -19,5 +19,8 @@
   "license": "MIT",
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "dependencies": {
+    "@contentstack/cli-utilities": "^1.5.12"
+  }
 }
