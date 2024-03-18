@@ -405,9 +405,13 @@ export default class EntriesImport extends BaseClass {
           if (!this.importConfig.skipExisting) {
             log(this.importConfig, `Entry '${title}' already exists`, 'info');
             entryLogObj.error = `Entry '${title}' already exists`
+            entryLogObj.status = 'WARNING'
+
+            const previousEntries = this.getPreviousEntries('warning') || [];
             fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','warning.json'),JSON.stringify([...previousEntries,entryLogObj]));
           }
         } else {
+          const previousEntries = this.getPreviousEntries('error') || [];
           fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
           log(
             this.importConfig,
