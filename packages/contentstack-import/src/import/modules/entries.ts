@@ -7,7 +7,8 @@
 
 import * as path from 'path';
 import { isEmpty, values, cloneDeep, find, indexOf, forEach } from 'lodash';
-import { FsUtility } from "@contentstack/cli-utilities";
+import { FsUtility } from '@contentstack/cli-utilities';
+import * as fileSystem from 'fs';
 import {
   fsUtil,
   log,
@@ -56,6 +57,7 @@ export default class EntriesImport extends BaseClass {
   private autoCreatedEntries: Record<string, any>[];
   private taxonomiesPath: string;
   public taxonomies: Record<string, unknown>;
+  public defaultLogObj;
 
   constructor({ importConfig, stackAPIClient }: ModuleClassParams) {
     super({ importConfig, stackAPIClient });
@@ -85,6 +87,18 @@ export default class EntriesImport extends BaseClass {
     this.envs = {};
     this.autoCreatedEntries = [];
     this.failedEntries = [];
+    this.defaultLogObj  = {
+      uid:'',
+      title:'',
+      status:'',
+      error:'',
+      "bsp_entry_id": "",
+      "bsp_entry_type": "",
+      "connect_composer_id": "",
+      "connect_composer_type": "",
+      "sdp_article_buganizerid": "",
+      details:''
+    };
   }
 
   async start(): Promise<any> {
@@ -108,6 +122,12 @@ export default class EntriesImport extends BaseClass {
       this.locales = values(fsUtil.readFile(this.localesPath) as Record<string, unknown>[]);
       this.locales.unshift(this.importConfig.master_locale); // adds master locale to the list
 
+      if(!fileSystem.existsSync(path.join(this.entriesPath,'custom-logs'))){
+        fileSystem.mkdirSync(path.join(this.entriesPath,'custom-logs'),{ recursive: true });
+        fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([]))
+        fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([]))
+        fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','warning.json'),JSON.stringify([]))
+      }
       //Create Entries
       const entryRequestOptions = this.populateEntryCreatePayload();
       for (let entryRequestOption of entryRequestOptions) {
@@ -275,6 +295,16 @@ export default class EntriesImport extends BaseClass {
     }
     return requestOptions;
   }
+   getPreviousEntries(type:any){
+    let fileObj:any;
+    let previousEntries = [];
+    if(fileSystem.existsSync(path.join(this.entriesPath,'custom-logs',`${type}.json`))){
+      fileObj = fileSystem.readFileSync(path.join(this.entriesPath,'custom-logs',`${type}.json`))
+      previousEntries = JSON.parse(fileObj);
+    }
+  
+   return previousEntries  || [];
+  }
 
   async createEntries({ cTUid, locale }: { cTUid: string; locale: string }): Promise<void> {
     const processName = 'Create Entries';
@@ -283,7 +313,7 @@ export default class EntriesImport extends BaseClass {
     const fs = new FsUtility({ basePath, indexFileName });
     const indexer = fs.indexFileContent;
     const indexerCount = values(indexer).length;
-    if (indexerCount === 0) {
+        if (indexerCount === 0) {
       return Promise.resolve();
     }
     // log(this.importConfig, `Starting to create entries for ${cTUid} in locale ${locale}`, 'info');
@@ -311,6 +341,17 @@ export default class EntriesImport extends BaseClass {
     const contentType = find(this.cTs, { uid: cTUid });
 
     const onSuccess = ({ response, apiData: entry, additionalInfo }: any) => {
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "SUCCESS";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      
+      const previousEntries = this.getPreviousEntries('success');
       if (additionalInfo[entry.uid]?.isLocalized) {
         let oldUid = additionalInfo[entry.uid].entryOldUid;
         log(
@@ -318,12 +359,16 @@ export default class EntriesImport extends BaseClass {
           `Localized entry: '${entry.title}' of content type ${cTUid} in locale ${locale}`,
           'info',
         );
+        entryLogObj.details = `Localized entry: '${entry.title}' of content type ${cTUid} in locale ${locale}`
+        fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
         entry.uid = oldUid;
         entry.entryOldUid = oldUid;
         entry.sourceEntryFilePath = path.join(basePath, additionalInfo.entryFileName); // stores source file path temporarily
         entriesCreateFileHelper.writeIntoFile({ [oldUid]: entry } as any, { mapKeyVal: true });
       } else {
         log(this.importConfig, `Created entry: '${entry.title}' of content type ${cTUid} in locale ${locale}`, 'info');
+        entryLogObj.details = `Created entry: '${entry.title}' of content type ${cTUid} in locale ${locale}`;
+        fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
         // This is for creating localized entries that do not have a counterpart in master locale.
         // For example : To create entry1 in fr-fr, where en-us is the master locale
         // entry1 will get created in en-us first, then fr-fr version will be created
@@ -337,8 +382,18 @@ export default class EntriesImport extends BaseClass {
         entriesCreateFileHelper.writeIntoFile({ [entry.uid]: entry } as any, { mapKeyVal: true });
       }
     };
-    const onReject = ({ error, apiData: entry, additionalInfo }: any) => {
+    const onReject = ({ error, apiData:entry, additionalInfo }: any) => {
       const { title, uid } = entry;
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      const previousEntries = this.getPreviousEntries('error') || [];
       //Note: write existing entries into files to handler later
       if (error.errorCode === 119) {
         if (error?.errors?.title || error?.errors?.uid) {
@@ -349,19 +404,27 @@ export default class EntriesImport extends BaseClass {
           }
           if (!this.importConfig.skipExisting) {
             log(this.importConfig, `Entry '${title}' already exists`, 'info');
+            entryLogObj.error = `Entry '${title}' already exists`
+            fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','warning.json'),JSON.stringify([...previousEntries,entryLogObj]));
           }
         } else {
+          fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
           log(
             this.importConfig,
             `${title} entry of content type ${cTUid} in locale ${locale} failed to create`,
             'error',
           );
           log(this.importConfig, formatError(error), 'error');
+          entryLogObj.error = `${title} entry of content type ${cTUid} in locale ${locale} failed to create`;
+          fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
+        
           this.failedEntries.push({ content_type: cTUid, locale, entry: { uid, title } });
         }
       } else {
         log(this.importConfig, `${title} entry of content type ${cTUid} in locale ${locale} failed to create`, 'error');
         log(this.importConfig, formatError(error), 'error');
+        entryLogObj.error = `${title} entry of content type ${cTUid} in locale ${locale} failed to create`;
+        fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
         this.failedEntries.push({ content_type: cTUid, locale, entry: { uid, title } });
       }
     };
@@ -450,6 +513,18 @@ export default class EntriesImport extends BaseClass {
       log(this.importConfig, formatError(error), 'error');
       this.failedEntries.push({ content_type: cTUid, locale, entry: { uid: entry.uid, title: entry.title } });
       apiOptions.apiData = null;
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.error = `${entry.title} entry of content type ${cTUid} in locale ${locale} failed to create`;
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
     }
     return apiOptions;
   }
@@ -483,8 +558,20 @@ export default class EntriesImport extends BaseClass {
       log(this.importConfig, `Replaced entry: '${entry.title}' of content type ${cTUid} in locale ${locale}`, 'info');
       this.entriesUidMapper[entry.uid] = response.uid;
       entriesReplaceFileHelper.writeIntoFile({ [entry.uid]: entry } as any, { mapKeyVal: true });
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "SUCCESS";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.details = `Replaced entry: '${entry.title}' of content type ${cTUid} in locale ${locale}`
+      const previousEntries = this.getPreviousEntries('success');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
-    const onReject = ({ error, apiData: { uid, title } }: any) => {
+    const onReject = ({ error, apiData: { uid,entry, title } }: any) => {
       log(this.importConfig, `${title} entry of content type ${cTUid} in locale ${locale} failed to replace`, 'error');
       log(this.importConfig, formatError(error), 'error');
       this.failedEntries.push({
@@ -493,6 +580,18 @@ export default class EntriesImport extends BaseClass {
         entry: { uid: this.entriesUidMapper[uid], title },
         entryId: uid,
       });
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.error = `${title} entry of content type ${cTUid} in locale ${locale} failed to replace`
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
 
     for (const index in indexer) {
@@ -609,10 +708,22 @@ export default class EntriesImport extends BaseClass {
 
     const contentType = find(this.cTs, { uid: cTUid });
 
-    const onSuccess = ({ response, apiData: { uid, url, title } }: any) => {
+    const onSuccess = ({ response, apiData: { uid, url, title,entry } }: any) => {
       log(this.importConfig, `Updated entry: '${title}' of content type ${cTUid} in locale ${locale}`, 'info');
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "SUCCESS";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.details = `Updated entry: '${title}' of content type ${cTUid} in locale ${locale}`;
+      const previousEntries = this.getPreviousEntries('success');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
-    const onReject = ({ error, apiData: { uid, title } }: any) => {
+    const onReject = ({ error, apiData: { uid, title,entry } }: any) => {
       log(this.importConfig, `${title} entry of content type ${cTUid} in locale ${locale} failed to update`, 'error');
       log(this.importConfig, formatError(error), 'error');
       this.failedEntries.push({
@@ -621,6 +732,18 @@ export default class EntriesImport extends BaseClass {
         entry: { uid: this.entriesUidMapper[uid], title },
         entryId: uid,
       });
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.error = `${title} entry of content type ${cTUid} in locale ${locale} failed to update`
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
 
     for (const index in indexer) {
@@ -697,17 +820,54 @@ export default class EntriesImport extends BaseClass {
         'error',
       );
       log(this.importConfig, formatError(error), 'error');
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.error = `${entry.title} entry of content type ${cTUid} in locale ${locale} failed to update`;
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
+
       apiOptions.apiData = null;
     }
     return apiOptions;
   }
 
   async enableMandatoryCTReferences(): Promise<void> {
-    const onSuccess = ({ response: contentType, apiData: { uid } }: any) => {
+    const onSuccess = ({ response: contentType, apiData: { uid,entry } }: any) => {
       log(this.importConfig, `${uid} content type references updated`, 'success');
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "SUCCESS";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.details = `${uid} content type references updated`;
+      const previousEntries = this.getPreviousEntries('success');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
-    const onReject = ({ error, apiData: { uid } }: any) => {
+    const onReject = ({ error, apiData: { uid,entry } }: any) => {
       log(this.importConfig, formatError(error), 'error');
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.error = formatError(error);
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
       throw new Error(`Failed to update references of content type ${uid}`);
     };
     return await this.makeConcurrentCall({
@@ -748,15 +908,35 @@ export default class EntriesImport extends BaseClass {
   }
 
   async removeAutoCreatedEntries(): Promise<void> {
-    const onSuccess = ({ response, apiData: { entryUid } }: any) => {
+    const onSuccess = ({ response, apiData: { entryUid,entry } }: any) => {
       log(this.importConfig, `Auto created entry in master locale removed - entry uid ${entryUid} `, 'success');
+      let entryLogObj = {
+        uid:entry?.uid,
+        title:entry?.title,
+        status:'SUCCESS',
+        error:'',
+        entry,
+        details:`Auto created entry in master locale removed - entry uid ${entryUid} `
+      };
+      const previousEntries = this.getPreviousEntries('success');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
-    const onReject = ({ error, apiData: { entryUid } }: any) => {
+    const onReject = ({ error, apiData: { entryUid,entry } }: any) => {
       log(
         this.importConfig,
         `Failed to remove auto created entry in master locale - entry uid ${entryUid} \n ${formatError(error)}`,
         'error',
       );
+      let entryLogObj = {
+        uid:entry?.uid,
+        title:entry?.title,
+        status:'FAILURE',
+        error:`Failed to remove auto created entry in master locale - entry uid ${entryUid} \n ${formatError(error)}`,
+        entry,
+        details:`Auto created entry in master locale removed - entry uid ${entryUid} `
+      };
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
     return await this.makeConcurrentCall({
       processName: 'Remove auto created entry in master locale',
@@ -843,7 +1023,8 @@ export default class EntriesImport extends BaseClass {
     }
     // log(this.importConfig, `Starting publish entries for ${cTUid} in locale ${locale}`, 'info');
 
-    const onSuccess = ({ response, apiData: { environments, entryUid }, additionalInfo }: any) => {
+    const onSuccess = ({ response, apiData, additionalInfo }: any) => {
+      const { environments, entryUid } = apiData
       log(
         this.importConfig,
         `Published entry: '${entryUid}' of content type ${cTUid} and locale ${locale} in ${environments?.join(
@@ -851,6 +1032,21 @@ export default class EntriesImport extends BaseClass {
         )} environments`,
         'info',
       );
+      let entryLogObj = {...this.defaultLogObj};
+      const entry = apiData;
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "SUCCESS";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.details = `Published entry: '${entryUid}' of content type ${cTUid} and locale ${locale} in ${environments?.join(
+        ',',
+      )} environments`;
+      const previousEntries = this.getPreviousEntries('success');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','success.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
     const onReject = ({ error, apiData, additionalInfo }: any) => {
       log(
@@ -859,6 +1055,19 @@ export default class EntriesImport extends BaseClass {
         'error',
       );
       log(this.importConfig, formatError(error), 'error');
+      const entry = apiData;
+      let entryLogObj = {...this.defaultLogObj};
+      entryLogObj.bsp_entry_id = entry?.sdp_migration?.bsp_entry_id;
+      entryLogObj.bsp_entry_type = entry?.sdp_migration?.bsp_entry_type;
+      entryLogObj.connect_composer_id = entry?.sdp_migration?.connect_composer_id;
+      entryLogObj.connect_composer_type = entry?.sdp_migration?.connect_composer_type;
+      entryLogObj.sdp_article_buganizerid = entry?.sdp_migration?.sdp_article_buganizerid;
+      entryLogObj.status = "FAILURE";
+      entryLogObj.uid = entry?.uid;
+      entryLogObj.title = entry?.title;
+      entryLogObj.error = `${apiData.entryUid} entry of content type ${cTUid} in locale ${locale} failed to publish`;
+      const previousEntries = this.getPreviousEntries('error');
+      fileSystem.writeFileSync(path.join(this.entriesPath,'custom-logs','error.json'),JSON.stringify([...previousEntries,entryLogObj]));
     };
 
     for (const index in indexer) {
